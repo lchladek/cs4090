@@ -55,26 +55,52 @@
     const connectForm = document.getElementById("connect-form");
     const voteForm = document.getElementById("vote-form");
     const voteFieldset = document.getElementById("vote-fieldset");
+    let candidateNames = [];
+
+    function selectedCandidate() {
+      const checked = voteForm.querySelector('input[name="candidate"]:checked');
+      return checked ? checked.value : null;
+    }
+
+    function buildVoteForm(names, selected, ready, busy) {
+      voteForm.innerHTML = names.map((name) =>
+        `<label><input type="radio" name="candidate" value="${name}" ${name === selected ? "checked" : ""}> ${name}</label>`
+      ).join("") + `<button type="submit" id="vote-btn" ${!ready || busy ? "disabled" : ""}>Cast Vote</button>`;
+      voteForm.onsubmit = submitVote;
+    }
 
     function render(data) {
-      document.getElementById("party").value = data.party;
+      const ready = data.state === "WAIT_VOTE";
+      const busy = ["WAIT_CANDIDATES", "RECEIVING_BALLOT", "CONNECTING", "CONNECTED", "SUBMITTING", "WAIT_RESULT"].includes(data.state);
+
+      if (busy) {
+        document.getElementById("party").value = data.party;
+      }
       document.getElementById("connection").textContent = data.connection;
       document.getElementById("state").textContent = "State: " + data.state;
       document.getElementById("status").textContent = data.status;
       document.getElementById("result").textContent = data.result || "";
 
-      const ready = data.state === "READY";
-      const busy = ["FETCHING_CANDIDATES", "CONNECTING", "CONNECTED", "SUBMITTING"].includes(data.state);
       voteFieldset.disabled = !ready;
       document.getElementById("connect-btn").disabled = busy;
-      document.getElementById("vote-btn").disabled = !ready || busy;
 
       const names = Object.keys(data.candidates || {});
-      if (names.length) {
-        voteForm.innerHTML = names.map((name, i) =>
-          `<label><input type="radio" name="candidate" value="${name}" ${i === 0 ? "checked" : ""}> ${name}</label>`
-        ).join("") + `<button type="submit" id="vote-btn" ${!ready || busy ? "disabled" : ""}>Cast Vote</button>`;
-        voteForm.onsubmit = submitVote;
+      const namesKey = names.join("\0");
+      const prevKey = candidateNames.join("\0");
+
+      if (!names.length) {
+        candidateNames = [];
+        voteForm.innerHTML = "";
+      } else if (namesKey !== prevKey || !voteForm.querySelector('input[name="candidate"]')) {
+        const keep = selectedCandidate();
+        const selected = keep && names.includes(keep) ? keep : names[0];
+        candidateNames = names;
+        buildVoteForm(names, selected, ready, busy);
+      } else {
+        const voteBtn = document.getElementById("vote-btn");
+        if (voteBtn) {
+          voteBtn.disabled = !ready || busy;
+        }
       }
     }
 

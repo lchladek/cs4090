@@ -1,3 +1,5 @@
+import argparse
+import json
 import logging
 import sys
 import threading
@@ -12,9 +14,11 @@ from client_backend import (
     DONE,
     FAILED,
     FETCH_FAILED,
-    FETCHING_CANDIDATES,
-    READY,
+    RECEIVING_BALLOT,
     SUBMITTING,
+    WAIT_CANDIDATES,
+    WAIT_RESULT,
+    WAIT_VOTE,
     fetch_candidates,
     start_voter_client,
     vote_to_bits,
@@ -29,15 +33,17 @@ _lock = threading.Lock()
 
 
 def _connection_line(state: str) -> str:
-    if state == FETCHING_CANDIDATES:
+    if state == WAIT_CANDIDATES:
         admin, counter = "connecting", "idle"
+    elif state == RECEIVING_BALLOT:
+        admin, counter = "receiving ballot", "idle"
     elif state == FETCH_FAILED:
         admin, counter = "failed", "idle"
-    elif state == READY:
+    elif state == WAIT_VOTE:
         admin, counter = "connected", "idle"
     elif state == CONNECTING:
         admin, counter = "connected", "connecting"
-    elif state in (CONNECTED, SUBMITTING):
+    elif state in (CONNECTED, SUBMITTING, WAIT_RESULT):
         admin, counter = "connected", "connected"
     elif state == DONE:
         admin, counter = "connected", "done"
@@ -73,14 +79,54 @@ def _get_ctx() -> dict:
 def _set_state(ctx: dict, state: str) -> None:
     ctx["state"] = state
     ctx["connection"] = _connection_line(state)
-    if state == READY:
+    if state == WAIT_VOTE:
         ctx["status"] = "Select a candidate and cast your vote."
     elif state == FETCH_FAILED:
         ctx["status"] = "Could not load candidates from Administrator."
-    elif state == FETCHING_CANDIDATES:
+    elif state == WAIT_CANDIDATES:
         ctx["status"] = "Loading candidates..."
+    elif state == RECEIVING_BALLOT:
+        ctx["status"] = "Receiving blank ballot from Administrator..."
     elif state == CONNECTING:
         ctx["status"] = "Connecting to Counter..."
+    elif state == WAIT_RESULT:
+        ctx["status"] = "Waiting for count result..."
+
+
+def _format_election_status(data: dict, party: str) -> str:
+    counts = data.get("counts", {})
+    parts = [f"Counts: {counts}"]
+    mine = data.get("votes", {}).get(party, {})
+    if mine.get("accepted") and mine.get("candidate"):
+        parts.append(f"Your vote: {mine['candidate']} ({mine.get('vote')})")
+    elif mine.get("vote"):
+        parts.append(f"Your vote rejected: {mine.get('vote')}")
+    return " | ".join(parts)
+
+
+def _apply_election_data(ctx: dict, data: dict) -> None:
+    party = ctx.get("party", "")
+    if party not in data.get("votes", {}):
+        return
+    if ctx["state"] in ("IDLE", "WAIT_CANDIDATES", "RECEIVING_BALLOT", "WAIT_VOTE", "FETCH_FAILED"):
+        return
+    ctx["state"] = DONE
+    ctx["connection"] = _connection_line(DONE)
+    ctx["status"] = _format_election_status(data, party)
+    ctx["result"] = json.dumps(data)
+
+
+def _handle_vote_result(ctx: dict, result: str) -> None:
+    ctx["result"] = result
+    try:
+        data = json.loads(result)
+    except json.JSONDecodeError:
+        ctx["status"] = result
+        return
+    if data.get("status") == "accepted":
+        _apply_election_data(ctx, data)
+        return
+    ctx["status"] = result
 
 
 def _snapshot(ctx: dict) -> dict:
@@ -100,8 +146,16 @@ def index():
         status=ctx["status"],
         candidates=ctx["candidates"],
         result=ctx["result"],
-        ready=ctx["state"] == READY,
-        busy=ctx["state"] in (FETCHING_CANDIDATES, CONNECTING, CONNECTED, SUBMITTING),
+        ready=ctx["state"] == WAIT_VOTE,
+        busy=ctx["state"]
+        in (
+            WAIT_CANDIDATES,
+            RECEIVING_BALLOT,
+            CONNECTING,
+            CONNECTED,
+            SUBMITTING,
+            WAIT_RESULT,
+        ),
     )
 
 
@@ -121,7 +175,7 @@ def connect():
         ctx["party"] = party
         ctx["candidates"] = {}
         ctx["result"] = ""
-        _set_state(ctx, FETCHING_CANDIDATES)
+        _set_state(ctx, WAIT_CANDIDATES)
 
     def run() -> None:
         def on_state(state: str) -> None:
@@ -144,7 +198,7 @@ def connect():
 def vote():
     ctx = _get_ctx()
     with _lock:
-        if ctx["state"] != READY:
+        if ctx["state"] != WAIT_VOTE:
             return jsonify({"error": "not ready"}), 400
         candidate = request.form.get("candidate", "")
         if candidate not in ctx["candidates"]:
@@ -160,8 +214,7 @@ def vote():
 
         def on_result(result: str) -> None:
             with _lock:
-                ctx["result"] = result
-                ctx["status"] = result
+                _handle_vote_result(ctx, result)
 
         start_voter_client(party, vote_bits, on_state, on_result)
 
@@ -175,6 +228,15 @@ class _SkipStatusPollLog(logging.Filter):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Quantum voting web client")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="HTTP port (default: 5000)",
+    )
+    args = parser.parse_args()
+
     logging.getLogger("werkzeug").addFilter(_SkipStatusPollLog())
-    print("Starting client.", file=sys.stderr, flush=True)
-    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
+    print(f"Starting client on http://127.0.0.1:{args.port}", file=sys.stderr, flush=True)
+    app.run(host="127.0.0.1", port=args.port, debug=False, use_reloader=False)

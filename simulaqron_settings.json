@@ -1,5 +1,5 @@
 {
-    "max_qubits": 50,
+    "max_qubits": 100,
     "max_registers": 1000,
     "conn_retry_time": 0.5,
     "conn_max_retries": 10,

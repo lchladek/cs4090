@@ -1,6 +1,6 @@
 # Quantum Voting
 
-Skeleton for a conjugate-coding quantum voting app inspired by [Quantum Voting Scheme Based on Conjugate Coding](https://ntt-review.jp/archive/ntttechnical.php?contents=ntr200801sp3.html) by Okamoto, Suzuki, and Tokunaga (2008).
+[NTT conjugate-coding voting scheme](https://ntt-review.jp/archive/ntttechnical.php?contents=ntr200801sp3.html) (Okamoto, Suzuki, Tokunaga, 2008).
 
 ## Setup
 
@@ -8,31 +8,34 @@ Skeleton for a conjugate-coding quantum voting app inspired by [Quantum Voting S
 pip install -r requirements.txt
 ```
 
+## Configuration
+
+`election.py`:
+
+- `PIECE_BITS` (n): qubits per blank piece minus parity; basis `K` has `n + 1` bits
+- `VOTE_BITS` (m): vote message length; ballot size is `m * (n + 1)` qubits
+- `CANDIDATES`, `PARTIES`: valid vote codes and authorized voters
+
+Raise `max_qubits` in `simulaqron_settings.json` if `MAX_CONNECTION_QUBITS` exceeds it.
+
 ## Run
 
-
-1. Make sure SimulaQron has stopped cleanly:
 ```bash
 simulaqron stop
-```
-and if not, run:
-```bash
 simulaqron reset processes
 simulaqron reset pidfiles
-```
 
-2. Start SimulaQron:
+simulaqron start --nodes=Voter1,Voter2,Voter3,Administrator,Counter \
+  --network-config-file simulaqron_network.json \
+  --simulaqron-config-file simulaqron_settings.json
+```
 
 ```bash
-simulaqron start
+python administrator.py
+python counter.py
+python client.py --port 5000
+python client.py --port 5001
+python client.py --port 5002
 ```
 
-3. Launch the voter client:
-
-```bash
-python client.py
-```
-
-Open http://127.0.0.1:5000 in a browser. Select a party and click Connect.
-
-See [PROTOCOL.md](PROTOCOL.md) for message formats. Administrator and Counter servers are not implemented yet.
+Open one browser tab per client (e.g. http://127.0.0.1:5000). Message order is in [PROTOCOL.md](PROTOCOL.md).
