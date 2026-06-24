@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quantum Voting</title>
+  <style>
+    body { font-family: sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin-top: 1rem; }
+    button { margin-top: 1rem; }
+    #connection, #state { color: #444; }
+    #status { margin-top: 0.5rem; }
+    fieldset { margin-top: 1rem; border: 1px solid #ccc; padding: 0.75rem; }
+    fieldset[disabled] { opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <h1>Quantum Voting</h1>
+
+  <form id="connect-form">
+    <label>
+      Party
+      <select name="party" id="party">
+        {% for name in parties %}
+        <option value="{{ name }}" {% if name == party %}selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" id="connect-btn">Connect</button>
+  </form>
+
+  <p id="connection">{{ connection }}</p>
+  <p id="state">State: {{ state }}</p>
+  <p id="status">{{ status }}</p>
+
+  <fieldset id="vote-fieldset" {% if not ready %}disabled{% endif %}>
+    <legend>Candidate</legend>
+    <form id="vote-form">
+      {% for name in candidates %}
+      <label>
+        <input type="radio" name="candidate" value="{{ name }}" {% if loop.first %}checked{% endif %}>
+        {{ name }}
+      </label>
+      {% endfor %}
+      <button type="submit" id="vote-btn" {% if busy %}disabled{% endif %}>Cast Vote</button>
+    </form>
+  </fieldset>
+
+  {% if result %}
+  <p id="result">{{ result }}</p>
+  {% else %}
+  <p id="result"></p>
+  {% endif %}
+
+  <script>
+    const connectForm = document.getElementById("connect-form");
+    const voteForm = document.getElementById("vote-form");
+    const voteFieldset = document.getElementById("vote-fieldset");
+
+    function render(data) {
+      document.getElementById("party").value = data.party;
+      document.getElementById("connection").textContent = data.connection;
+      document.getElementById("state").textContent = "State: " + data.state;
+      document.getElementById("status").textContent = data.status;
+      document.getElementById("result").textContent = data.result || "";
+
+      const ready = data.state === "READY";
+      const busy = ["FETCHING_CANDIDATES", "CONNECTING", "CONNECTED", "SUBMITTING"].includes(data.state);
+      voteFieldset.disabled = !ready;
+      document.getElementById("connect-btn").disabled = busy;
+      document.getElementById("vote-btn").disabled = !ready || busy;
+
+      const names = Object.keys(data.candidates || {});
+      if (names.length) {
+        voteForm.innerHTML = names.map((name, i) =>
+          `<label><input type="radio" name="candidate" value="${name}" ${i === 0 ? "checked" : ""}> ${name}</label>`
+        ).join("") + `<button type="submit" id="vote-btn" ${!ready || busy ? "disabled" : ""}>Cast Vote</button>`;
+        voteForm.onsubmit = submitVote;
+      }
+    }
+
+    async function poll() {
+      const res = await fetch("/status");
+      render(await res.json());
+    }
+
+    connectForm.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = new FormData(connectForm);
+      const res = await fetch("/connect", { method: "POST", body });
+      render(await res.json());
+    };
+
+    async function submitVote(e) {
+      e.preventDefault();
+      const body = new FormData(voteForm);
+      const res = await fetch("/vote", { method: "POST", body });
+      render(await res.json());
+    }
+
+    voteForm.onsubmit = submitVote;
+    setInterval(poll, 1000);
+  </script>
+</body>
+</html>
