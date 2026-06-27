@@ -1,159 +1,145 @@
-import sys
+import asyncio
+import random
 from asyncio import StreamReader, StreamWriter
-from functools import partial
 from pathlib import Path
-from types import SimpleNamespace
-import numpy as np
 
-# QuTech / NetQASM boilerplate imports
+from simulaqron.general.host_config import SocketsConfig
+from simulaqron.sdk.protocol import SimulaQronClassicalServer
+from simulaqron.settings import network_config, simulaqron_settings
+from simulaqron.settings.network_config import NodeConfigType
+
 from netqasm.runtime.settings import set_simulator
 set_simulator("simulaqron")
 from netqasm.sdk.external import NetQASMConnection
+from netqasm.sdk import EPRSocket
 from netqasm.sdk.qubit import Qubit
 
-from simulaqron.settings import simulaqron_settings, network_config
-from simulaqron.settings.network_config import NodeConfigType
-from simulaqron.general.host_config import SocketsConfig
-from simulaqron.sdk.protocol import SimulaQronClassicalServer
+EXPECTED_VOTERS = 3
+VOTER_NODES = ["Voter_1", "Voter_2", "Voter_3"]
+CHSH_ROUNDS = 4
 
-STATE_WAITING_BALLOTS = "WAITING_BALLOTS"
-STATE_DONE = "DONE"
 
-async def handle_ballots_bob(ctx: SimpleNamespace, writer: StreamWriter, raw_msg: str) -> str:
-    """
-    1. Parses the submitted citizen votes from Alice (e.g. "BALLOTS|0,0,0,1").
-    2. Opens a NetQASM connection to act as the Centralized Quantum Tally Machine.
-    3. Executes the Phase-Flip voting circuit for each vote independently until 
-       we collect 'M' valid post-selected samples per citizen.
-    4. Aggregates the probability distribution and scales by N (1+1=2 math).
-    """
-    try:
-        header, votes_str = raw_msg.split("|", 1)
-        votes = [int(v) for v in votes_str.split(",")]
-    except (ValueError, AttributeError):
-        print(f"Bob: Failed to parse ballot message '{raw_msg}'", flush=True)
-        return STATE_WAITING_BALLOTS
+class QuantumRAM:
+    """Simulates persistent Quantum Memory across asynchronous Python lifecycles."""
+    def __init__(self):
+        self.epr_sockets = {name: EPRSocket(name) for name in VOTER_NODES}
+        self.conn = NetQASMConnection("Tallyman", epr_sockets=list(self.epr_sockets.values()))
+        self.stored_ballots: dict[str, Qubit] = {}
+        self.active_sessions: dict[str, tuple[StreamReader, StreamWriter]] = {}
+        self.hw_lock = asyncio.Lock()
+        self.quorum_reached = asyncio.Event()
 
-    N = len(votes)
-    samples_per_voter = 25  # We want 25 successful post-selections per voter (100 total)
-    
-    print(f"Bob: Received {N} citizen ballots. Starting quantum tallying engine...", flush=True)
+    def shutdown(self):
+        self.conn.close()
 
-    valid_candidate_measurements = []
-    total_subroutines_dispatched = 0
 
-    # Initialize the single-machine quantum tally center
-    with NetQASMConnection("Bob") as conn:
-        for voter_id, vote in enumerate(votes):
-            voter_valid_samples = 0
+async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamReader, writer: StreamWriter) -> bool:
+    """Executes 4 CHSH rounds; requires >= 3 wins to verify Bell state fidelity."""
+    wins = 0
+    for _ in range(CHSH_ROUNDS):
+        basis_a = random.choice([0, 1])
+
+        writer.write(f"CHSH|{basis_a}\n".encode())
+        await writer.drain()
+
+        q_chsh = qram.epr_sockets[voter_id].create_keep()[0]
+        if basis_a == 1:
+            q_chsh.H()
+        m_a = q_chsh.measure()
+        
+        qram.conn.flush()
+
+        line = await reader.readline()
+        if not line: return False
+        parts = line.decode().strip().split("|")
+        basis_b, m_b = int(parts[1]), int(parts[2])
+
+        if (int(m_a) ^ m_b) == (basis_a & basis_b):
+            wins += 1
+
+    print(f"Tallyman: [{voter_id}] CHSH Score -> {wins}/{CHSH_ROUNDS} (Required: >= 3)", flush=True)
+    return wins >= 3
+
+
+def make_voter_handler(qram: QuantumRAM):
+    async def handler(reader: StreamReader, writer: StreamWriter):
+        raw = await reader.readline()
+        if not raw: return
+        parts = raw.decode().strip().split("|")
+        voter_id = parts[1] if len(parts) > 1 else parts[0]
+
+        async with qram.hw_lock:
+            print(f"Tallyman: [{voter_id}] checking Bell pair fidelity...", flush=True)
+            passed_chsh = await verify_chsh_channel(qram, voter_id, reader, writer)
             
-            # Keep trying until this specific voter passes post-selection 25 times
-            while voter_valid_samples < samples_per_voter:
-                total_subroutines_dispatched += 1
+            if not passed_chsh:
+                print(f"Tallyman: [{voter_id}] REJECTED. Entanglement degraded!", flush=True)
+                writer.close()
+                return
 
-                # Allocate the 3 required qubits for the core mechanism
-                q_anc = Qubit(conn)
-                q_candA = Qubit(conn)
-                q_candB = Qubit(conn)
+            writer.write(b"VOTE_PHASE\n")
+            await writer.drain()
 
-                # --- STEP 1: PREPARATION ---
-                # Ancilla into |+>
-                q_anc.H()
-                # Candidate register into Bell state |00> + |11> (Blue vs Red)
-                q_candA.H()
-                q_candA.cnot(q_candB)
+            q_ballot = qram.epr_sockets[voter_id].create_keep()[0]
+            qram.stored_ballots[voter_id] = q_ballot
+            qram.conn.flush()
 
-                # --- STEP 2: VOTING PHASE (Controlled Phase-Flips) ---
-                # A vote is a discrete phase flip triggered when Ancilla is |0>.
-                # We use the mathematical identity: trigger on |0> == wrap in X gates.
-                
-                if vote == 0:
-                    # Vote BLUE: Phase flip on |0>_anc |00>_cand.
-                    # Because candA and candB are entangled, targeting candA is enough!
-                    q_anc.X()
-                    q_candA.X()
-                    q_anc.cphase(q_candA)  # cphase is a native Controlled-Z in NetQASM
-                    q_candA.X()
-                    q_anc.X()
-                else:
-                    # Vote RED: Phase flip on |0>_anc |11>_cand.
-                    # Triggers when Ancilla is |0> AND candB is |1>.
-                    q_anc.X()
-                    q_anc.cphase(q_candB)
-                    q_anc.X()
+            await reader.readline()
+            qram.active_sessions[voter_id] = (reader, writer)
 
-                # --- STEP 3: TALLYMAN INTERFERENCE ---
-                # Transform phase differences back into observable population differences
-                q_anc.H()
+        print(f"Tallyman: [{voter_id}] ballot stored in Q-RAM. ({len(qram.stored_ballots)}/{EXPECTED_VOTERS})", flush=True)
 
-                # --- STEP 4: MEASUREMENT ---
-                m_anc = q_anc.measure()
-                m_candA = q_candA.measure()
-                m_candB = q_candB.measure()
+        if len(qram.stored_ballots) == EXPECTED_VOTERS:
+            print("\n" + "="*50, flush=True)
+            print("Tallyman: All votes secured. CLOSING VOTING PHASE.", flush=True)
+            print("Tallyman: MEASURING ALL STORED BELL PAIRS IN X-BASIS...", flush=True)
+            print("="*50 + "\n", flush=True)
 
-                # Dispatch instructions to the SimulaQron backend
-                conn.flush()
+            async with qram.hw_lock:
+                center_outcomes = {}
+                for v_id, q in qram.stored_ballots.items():
+                    q.H()
+                    center_outcomes[v_id] = q.measure()
+                qram.conn.flush()
 
-                # --- STEP 5: POST-SELECTION ---
-                # We only accept the universe branch where the ancilla collapsed to |1>
-                if m_anc.value == 1:
-                    voter_valid_samples += 1
-                    cand_outcome = f"{m_candA.value}{m_candB.value}"
-                    valid_candidate_measurements.append(cand_outcome)
+                for _, w in qram.active_sessions.values():
+                    w.write(b"START_TALLY\n")
+                    await w.drain()
 
-    # --- STEP 6: CLASSICAL TALLY RECONSTRUCTION (1+1=2) ---
-    total_valid = len(valid_candidate_measurements)
-    blue_count = valid_candidate_measurements.count("00")
-    red_count = valid_candidate_measurements.count("11")
+                final_votes = []
+                for v_name, (r, _) in qram.active_sessions.items():
+                    v_line = await r.readline()
+                    v_bit = int(v_line.decode().strip().split("|")[1])
+                    final_votes.append(int(center_outcomes[v_name]) ^ v_bit)
 
-    # Observed quantum probability mass
-    p_blue = blue_count / total_valid
-    p_red = red_count / total_valid
+            total_valid = max(len(final_votes), 1)
+            p_blue = final_votes.count(0) / total_valid
+            p_red = final_votes.count(1) / total_valid
+            broadcast_msg = f"RESULT|{p_blue:.2f},{p_red:.2f}\n".encode()
 
-    # Scale probability by total citizens N to get exact linear votes
-    calculated_blue_votes = p_blue * N
-    calculated_red_votes = p_red * N
+            for _, w in qram.active_sessions.values():
+                w.write(broadcast_msg)
+                await w.drain()
+            qram.quorum_reached.set()
 
-    print("\n" + "="*50, flush=True)
-    print(f"Bob: Tallying complete!", flush=True)
-    print(f"Bob: Total quantum runs dispatched : {total_subroutines_dispatched}", flush=True)
-    print(f"Bob: Post-selection success rate   : {(total_valid / total_subroutines_dispatched)*100:.1f}% (Theory: 50.0%)", flush=True)
-    print(f"Bob: Quantum Probability Mass      -> Blue: {p_blue*100:.1f}%, Red: {p_red*100:.1f}%", flush=True)
-    print(f"Bob: Linear Vote Result (P * N)    -> BLUE: {calculated_blue_votes:.2f} (~{round(calculated_blue_votes)} votes)", flush=True)
-    print(f"Bob: Linear Vote Result (P * N)    -> RED : {calculated_red_votes:.2f} (~{round(calculated_red_votes)} votes)", flush=True)
-    print("="*50 + "\n", flush=True)
+        await qram.quorum_reached.wait()
+        writer.close()
 
-    # Transmit final tally back to Alice
-    writer.write(f"RESULT|{calculated_blue_votes:.2f},{calculated_red_votes:.2f}\n".encode())
-    return STATE_DONE
-
-
-def make_run_bob():
-    async def run_bob(reader: StreamReader, writer: StreamWriter) -> None:
-        print("Bob: Polling station (Alice) connected.", flush=True)
-        ctx = SimpleNamespace()
-        state = STATE_WAITING_BALLOTS
-
-        while state != STATE_DONE:
-            data = await reader.readline()
-            if not data:
-                break
-            raw_msg = data.decode().strip()
-            if state == STATE_WAITING_BALLOTS:
-                state = await handle_ballots_bob(ctx, writer, raw_msg)
-
-        print("Bob: Classical server shutting down.")
-    return run_bob
+    return handler
 
 
 if __name__ == "__main__":
     _here = Path(__file__).parent
     simulaqron_settings.read_from_file(_here / "simulaqron_settings.json")
     network_config.read_from_file(_here / "simulaqron_network.json")
-    
-    sockets_config = SocketsConfig(network_config, "default", NodeConfigType.APP)
-    server = SimulaQronClassicalServer(sockets_config, "Bob")
-    server.register_client_handler(make_run_bob())
-    
-    print("Bob: Starting Centralized Quantum Tally Server...", flush=True)
-    server.start_serving()
+
+    qram = QuantumRAM()
+    cfg = SocketsConfig(network_config, "default", NodeConfigType.APP)
+    server = SimulaQronClassicalServer(cfg, "Tallyman")
+    server.register_client_handler(make_voter_handler(qram))
+
+    try:
+        print(f"Tallyman: Server online ({EXPECTED_VOTERS} voters expected)...", flush=True)
+        server.start_serving()
+    finally:
+        qram.shutdown()
