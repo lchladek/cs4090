@@ -16,7 +16,14 @@ from netqasm.sdk.qubit import Qubit
 
 EXPECTED_VOTERS = 3
 VOTER_NODES = ["Voter_1", "Voter_2", "Voter_3"]
-CHSH_ROUNDS = 4
+
+# More stable statistics than 4 rounds
+CHSH_ROUNDS = 20
+# Accept if at least 75% rounds satisfy CHSH win condition
+CHSH_MIN_WIN_RATIO = 0.75
+CHSH_REQUIRED_WINS = int(CHSH_ROUNDS * CHSH_MIN_WIN_RATIO + 0.9999)  # ceil
+
+WIN_RULE = 1
 
 
 class QuantumRAM:
@@ -34,7 +41,7 @@ class QuantumRAM:
 
 
 async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamReader, writer: StreamWriter) -> bool:
-    """Executes 4 CHSH rounds; requires >= 3 wins to verify Bell state fidelity."""
+    """Executes CHSH rounds; requires configurable minimum wins to verify Bell state fidelity."""
     wins = 0
     for _ in range(CHSH_ROUNDS):
         basis_a = random.choice([0, 1])
@@ -43,22 +50,42 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
         await writer.drain()
 
         q_chsh = qram.epr_sockets[voter_id].create_keep()[0]
+
+        # A0 = Z, A1 = X
         if basis_a == 1:
             q_chsh.H()
         m_a = q_chsh.measure()
-        
+
         qram.conn.flush()
 
         line = await reader.readline()
-        if not line: return False
+        if not line:
+            return False
         parts = line.decode().strip().split("|")
         basis_b, m_b = int(parts[1]), int(parts[2])
 
-        if (int(m_a) ^ m_b) == (basis_a & basis_b):
+
+        # CHSH win predicate in bit form
+        lhs = (int(m_a) ^ m_b)
+        rhs = (basis_a & basis_b)
+
+        if WIN_RULE == 0:
+            win = (lhs == rhs)
+        else:
+            win = (lhs != rhs)
+
+        # Debug print
+        print(f"[DBG {voter_id}] x={basis_a}, y={basis_b}, a={int(m_a)}, b={m_b}, lhs={lhs}, rhs={rhs}, win={win}", flush=True)
+
+        if win:
             wins += 1
 
-    print(f"Tallyman: [{voter_id}] CHSH Score -> {wins}/{CHSH_ROUNDS} (Required: >= 3)", flush=True)
-    return wins >= 3
+    print(
+        f"Tallyman: [{voter_id}] CHSH Score -> {wins}/{CHSH_ROUNDS} "
+        f"(Required: >= {CHSH_REQUIRED_WINS})",
+        flush=True,
+    )
+    return wins >= CHSH_REQUIRED_WINS
 
 
 def make_voter_handler(qram: QuantumRAM):
@@ -71,7 +98,7 @@ def make_voter_handler(qram: QuantumRAM):
         async with qram.hw_lock:
             print(f"Tallyman: [{voter_id}] checking Bell pair fidelity...", flush=True)
             passed_chsh = await verify_chsh_channel(qram, voter_id, reader, writer)
-            
+
             if not passed_chsh:
                 print(f"Tallyman: [{voter_id}] REJECTED. Entanglement degraded!", flush=True)
                 writer.close()

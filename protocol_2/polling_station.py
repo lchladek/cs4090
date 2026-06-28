@@ -13,7 +13,7 @@ set_simulator("simulaqron")
 from netqasm.sdk.external import NetQASMConnection
 from netqasm.sdk import EPRSocket
 
-CHSH_ROUNDS = 4
+CHSH_ROUNDS = 20
 
 
 def make_polling_station(voter_id: str, choice: int):
@@ -29,19 +29,34 @@ def make_polling_station(voter_id: str, choice: int):
         # =====================================================================
         for _ in range(CHSH_ROUNDS):
             chsh_data = (await reader.readline()).decode().strip()
-            _, basis_a_str = chsh_data.split("|")
+            if not chsh_data:
+                print(f"[{voter_id}] Empty CHSH message (server closed connection?)")
+                conn.close()
+                return
+
+            parts = chsh_data.split("|")
+            if len(parts) != 2 or parts[0] != "CHSH":
+                print(f"[{voter_id}] Invalid CHSH message: {chsh_data!r}")
+                conn.close()
+                return
+
+            basis_a = int(parts[1])
 
             q_chsh = epr_sock.recv_keep()[0]
             basis_b = random.choice([0, 1])
 
-            # Tsirelson optimal angles: B=0 -> +pi/4 (step 4), B=1 -> -pi/4 (step 28)
+            # Bob settings (intended CHSH pair):
+            # B0 ~ +pi/4, B1 ~ -pi/4 in this SDK's discrete angle convention.
+            # If scores remain low in noiseless mode, swap these two assignments.
             if basis_b == 0:
-                q_chsh.rot_Y(angle=4)   # <--- DE ECHTE 4!
+                q_chsh.rot_Y(angle=28)
             else:
-                q_chsh.rot_Y(angle=28)  # <--- DE ECHTE 28!
+                q_chsh.rot_Y(angle=4)
 
             m_b = q_chsh.measure()
             conn.flush()
+            # TEMP DEBUG:
+            print(f"[{voter_id}] CHSH tuple: x={basis_a}, y={basis_b}, b={int(m_b)}")
 
             writer.write(f"CHSH_RESP|{basis_b}|{int(m_b)}\n".encode())
             await writer.drain()
@@ -62,7 +77,7 @@ def make_polling_station(voter_id: str, choice: int):
             q_ballot.Z()
 
         conn.flush()
-        
+
         print(f"[{voter_id}] Ballot locked in quantum memory.")
         writer.write(b"VOTE_LOCKED\n")
         await writer.drain()
@@ -88,20 +103,21 @@ def make_polling_station(voter_id: str, choice: int):
 
         print("\n" + "-"*45)
         print(f"[{voter_id}] OFFICIAL ELECTION BROADCAST")
-        print(f"           Candidate BLUE : {float(p_blue)*100:.1f}%")
-        print(f"           Candidate RED  : {float(p_red)*100:.1f}%")
-        print("-" * 45 + "\n")
+        print(f"Blue Candidate : {float(p_blue)*100:.1f}%")
+        print(f"Red Candidate  : {float(p_red)*100:.1f}%")
+        print("-"*45 + "\n")
 
     return protocol
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python polling_station.py <VOTER_ID> <CHOICE_INT>")
+    if len(sys.argv) != 3:
+        print("Usage: python polling_station.py <Voter_ID> <Choice>")
+        print("Example: python polling_station.py Voter_1 0")
         sys.exit(1)
 
-    v_id = sys.argv[1]
-    v_choice = int(sys.argv[2])
+    voter_id = sys.argv[1]
+    choice = int(sys.argv[2])
 
     _here = Path(__file__).parent
     simulaqron_settings.read_from_file(_here / "simulaqron_settings.json")
@@ -110,4 +126,4 @@ if __name__ == "__main__":
     cfg = SocketsConfig(network_config, "default", NodeConfigType.APP)
     client = SimulaQronClassicalClient(cfg)
 
-    client.run_client("Tallyman", make_polling_station(v_id, v_choice))
+    client.run_client("Tallyman", make_polling_station(voter_id, choice))
