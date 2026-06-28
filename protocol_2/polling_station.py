@@ -47,8 +47,7 @@ def make_polling_station(voter_id: str, choice: int):
             q_chsh = epr_sock.recv_keep()[0]
             basis_b = random.choice([0, 1])
 
-            # Bob settings (intended CHSH pair):
-            # The angles are confusing, but these two are correct
+            # Bob's optimal CHSH bases: rotated plus minus 45 degrees in the XZ-plane
             if basis_b == 0:
                 q_chsh.rot_Y(angle=-pi/4)
             else:
@@ -56,14 +55,12 @@ def make_polling_station(voter_id: str, choice: int):
 
             m_b = q_chsh.measure()
             conn.flush()
-            # TEMP DEBUG:
-            #print(f"[{voter_id}] CHSH tuple: x={basis_a}, y={basis_b}, b={int(m_b)}")
 
             writer.write(f"CHSH_RESP|{basis_b}|{int(m_b)}\n".encode())
             await writer.drain()
 
         # =====================================================================
-        # PHASE 2: VOTING PHASE (MEMORY STORAGE)
+        # PHASE 2: VOTING PHASE
         # =====================================================================
         phase_signal = await reader.readline()
         if phase_signal != b"VOTE_PHASE\n":
@@ -74,6 +71,7 @@ def make_polling_station(voter_id: str, choice: int):
         print(f"[{voter_id}] Entanglement healthy. Receiving Bell ballot...")
         q_ballot = epr_sock.recv_keep()[0]
 
+        # Encode vote: Choice 0 = do nothing, Choice 1 = phase flip
         if choice == 1:
             q_ballot.Z()
 
@@ -90,6 +88,8 @@ def make_polling_station(voter_id: str, choice: int):
         await reader.readline()
 
         print(f"[{voter_id}] Quorum met! Measuring in X-basis...")
+        
+        # Measure Bob's half in X-basis to send the shared parity bit to Tallyman
         q_ballot.H()
         m_tally = q_ballot.measure()
         conn.flush()

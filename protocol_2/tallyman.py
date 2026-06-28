@@ -17,11 +17,9 @@ from netqasm.sdk.qubit import Qubit
 EXPECTED_VOTERS = 3
 VOTER_NODES = ["Voter_1", "Voter_2", "Voter_3"]
 
-# More stable statistics than 4 rounds
 CHSH_ROUNDS = 20
-# Accept if at least 75% rounds satisfy CHSH win condition
 CHSH_MIN_WIN_RATIO = 0.75
-CHSH_REQUIRED_WINS = int(CHSH_ROUNDS * CHSH_MIN_WIN_RATIO + 0.9999)  # ceil
+CHSH_REQUIRED_WINS = int(CHSH_ROUNDS * CHSH_MIN_WIN_RATIO + 0.9999) 
 
 
 class QuantumRAM:
@@ -47,9 +45,10 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
         writer.write(f"CHSH|{basis_a}\n".encode())
         await writer.drain()
 
+        # Generate EPR pair and hold Alice's half in memory
         q_chsh = qram.epr_sockets[voter_id].create_keep()[0]
 
-        # A0 = Z, A1 = X
+        # Standard CHSH Alice bases: Z-basis (if 0) or X-basis (if 1, via Hadamard)
         if basis_a == 1:
             q_chsh.H()
         m_a = q_chsh.measure()
@@ -62,14 +61,10 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
         parts = line.decode().strip().split("|")
         basis_b, m_b = int(parts[1]), int(parts[2])
 
-
-        # CHSH win condition
+        # CHSH winning condition
         lhs = (int(m_a) ^ m_b)
         rhs = (basis_a & basis_b)
         win = (lhs == rhs)
-
-        # Debug print
-        #print(f"[DBG {voter_id}] x={basis_a}, y={basis_b}, a={int(m_a)}, b={m_b}, lhs={lhs}, rhs={rhs}, win={win}", flush=True)
 
         if win:
             wins += 1
@@ -84,14 +79,13 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
 
 def make_voter_handler(qram: QuantumRAM):
     async def handler(reader: StreamReader, writer: StreamWriter):
-        """Handle the each of the voters, do a chsh check first and then record the vote."""
         raw = await reader.readline()
         if not raw: return
         parts = raw.decode().strip().split("|")
         voter_id = parts[1] if len(parts) > 1 else parts[0]
 
+        # Lock required: NetQASM simulator cannot handle concurrent quantum operations
         async with qram.hw_lock:
-            # CHSH check
             print(f"Tallyman: [{voter_id}] checking Bell pair fidelity...", flush=True)
             passed_chsh = await verify_chsh_channel(qram, voter_id, reader, writer)
 
@@ -99,13 +93,11 @@ def make_voter_handler(qram: QuantumRAM):
                 print(f"Tallyman: [{voter_id}] REJECTED. Entanglement degraded!", flush=True)
                 writer.close()
                 return
-            
-            # Go to the vote phase
 
             writer.write(b"VOTE_PHASE\n")
             await writer.drain()
 
-            # create ballot epr pair
+            # Create the entangled ballot pair, store Alice's half in Q-RAM
             q_ballot = qram.epr_sockets[voter_id].create_keep()[0]
             qram.stored_ballots[voter_id] = q_ballot
             qram.conn.flush()
@@ -123,6 +115,7 @@ def make_voter_handler(qram: QuantumRAM):
 
             async with qram.hw_lock:
                 center_outcomes = {}
+                # Measure Alice's stored halves in the X-basis
                 for v_id, q in qram.stored_ballots.items():
                     q.H()
                     center_outcomes[v_id] = q.measure()
@@ -136,6 +129,9 @@ def make_voter_handler(qram: QuantumRAM):
                 for v_name, (r, _) in qram.active_sessions.items():
                     v_line = await r.readline()
                     v_bit = int(v_line.decode().strip().split("|")[1])
+                    
+                    # Reconstruct vote via Bell parity check:
+                    # If Bob applied a Z-gate, the X-basis measurement outcomes flip parity
                     final_votes.append(int(center_outcomes[v_name]) ^ v_bit)
 
             total_valid = max(len(final_votes), 1)
@@ -148,6 +144,7 @@ def make_voter_handler(qram: QuantumRAM):
                 await w.drain()
             qram.quorum_reached.set()
 
+        # Keep TCP session alive until all voters have received the broadcast result
         await qram.quorum_reached.wait()
         writer.close()
 

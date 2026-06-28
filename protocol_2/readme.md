@@ -2,7 +2,7 @@
 
 ## Overview
 
-This protocol implements a distributed quantum voting protocol inspired by the paper by Aydin & Daskin on Bell-state based quantum voting. It is the second protocol by our awesome company QuVote and is available for your high-security voting needs. The implementation demonstrates how quantum entanglement can be used to encode and anonymously tally votes using Bell pairs in a simulated quantum network.
+This protocol implements a distributed quantum voting protocol inspired by the paper by Aydin & Daskin [1] on Bell-state based quantum voting. It is the second protocol by our awesome company QuVote and is available for your high-security voting needs. The implementation demonstrates how quantum entanglement can be used to encode and anonymously tally votes using Bell pairs in a simulated quantum network.
 
 The protocol is implemented using NetQASM and SimulaQron, where each voter is represented as an independent network node communicating with a central tally authority.
 
@@ -31,11 +31,9 @@ Votes are encoded through a local phase flip on the voter's qubit.
 
 This transforms
 
-[
-|\Phi^+\rangle
-\longrightarrow
-|\Phi^-\rangle
-]
+$$
+|\Phi^+\rangle \longrightarrow |\Phi^-\rangle
+$$
 
 without revealing the vote to the tallyman.
 
@@ -179,7 +177,7 @@ where
 * `0` = Blue candidate
 * `1` = Red candidate
 
-The scripts initialize.sh and start_venv.sh can be used to start simulaqron and activate the environment. (initialize.sh does both, start_venv.sh only activate the environment.)
+The scripts `initialize.sh` and `start_venv.sh` can be used to start simulaqron and activate the environment. (`initialize.sh` does both, `start_venv.sh` only activate the environment.)
 ```bash
 source initialize.sh
 source start_venv.sh
@@ -207,3 +205,7 @@ Red Candidate  : 33.3%
 ```
 
 ---
+
+## References
+
+1. Aydin, A. E., & Daskin, A. (2026). *Quantum Voting Protocol for Centralized and Distributed Voting Based on Phase-Flip Counting*. arXiv:2510.15243. https://arxiv.org/abs/2510.15243
