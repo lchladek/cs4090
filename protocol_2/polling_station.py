@@ -13,6 +13,8 @@ set_simulator("simulaqron")
 from netqasm.sdk.external import NetQASMConnection
 from netqasm.sdk import EPRSocket
 
+from math import pi
+
 CHSH_ROUNDS = 20
 
 
@@ -46,17 +48,16 @@ def make_polling_station(voter_id: str, choice: int):
             basis_b = random.choice([0, 1])
 
             # Bob settings (intended CHSH pair):
-            # B0 ~ +pi/4, B1 ~ -pi/4 in this SDK's discrete angle convention.
-            # If scores remain low in noiseless mode, swap these two assignments.
+            # The angles are confusing, but these two are correct
             if basis_b == 0:
-                q_chsh.rot_Y(angle=28)
+                q_chsh.rot_Y(angle=-pi/4)
             else:
-                q_chsh.rot_Y(angle=4)
+                q_chsh.rot_Y(angle=pi/4)
 
             m_b = q_chsh.measure()
             conn.flush()
             # TEMP DEBUG:
-            print(f"[{voter_id}] CHSH tuple: x={basis_a}, y={basis_b}, b={int(m_b)}")
+            #print(f"[{voter_id}] CHSH tuple: x={basis_a}, y={basis_b}, b={int(m_b)}")
 
             writer.write(f"CHSH_RESP|{basis_b}|{int(m_b)}\n".encode())
             await writer.drain()

@@ -23,11 +23,9 @@ CHSH_ROUNDS = 20
 CHSH_MIN_WIN_RATIO = 0.75
 CHSH_REQUIRED_WINS = int(CHSH_ROUNDS * CHSH_MIN_WIN_RATIO + 0.9999)  # ceil
 
-WIN_RULE = 1
-
 
 class QuantumRAM:
-    """Simulates persistent Quantum Memory across asynchronous Python lifecycles."""
+    """Keeps NetQASM qubit handles alive during the election. Simulates persistent storage within one long-lived NetQASM connection."""
     def __init__(self):
         self.epr_sockets = {name: EPRSocket(name) for name in VOTER_NODES}
         self.conn = NetQASMConnection("Tallyman", epr_sockets=list(self.epr_sockets.values()))
@@ -41,7 +39,7 @@ class QuantumRAM:
 
 
 async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamReader, writer: StreamWriter) -> bool:
-    """Executes CHSH rounds; requires configurable minimum wins to verify Bell state fidelity."""
+    """Executes CHSH rounds, requires configurable minimum wins to verify Bell state fidelity."""
     wins = 0
     for _ in range(CHSH_ROUNDS):
         basis_a = random.choice([0, 1])
@@ -65,17 +63,13 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
         basis_b, m_b = int(parts[1]), int(parts[2])
 
 
-        # CHSH win predicate in bit form
+        # CHSH win condition
         lhs = (int(m_a) ^ m_b)
         rhs = (basis_a & basis_b)
-
-        if WIN_RULE == 0:
-            win = (lhs == rhs)
-        else:
-            win = (lhs != rhs)
+        win = (lhs == rhs)
 
         # Debug print
-        print(f"[DBG {voter_id}] x={basis_a}, y={basis_b}, a={int(m_a)}, b={m_b}, lhs={lhs}, rhs={rhs}, win={win}", flush=True)
+        #print(f"[DBG {voter_id}] x={basis_a}, y={basis_b}, a={int(m_a)}, b={m_b}, lhs={lhs}, rhs={rhs}, win={win}", flush=True)
 
         if win:
             wins += 1
@@ -90,12 +84,14 @@ async def verify_chsh_channel(qram: QuantumRAM, voter_id: str, reader: StreamRea
 
 def make_voter_handler(qram: QuantumRAM):
     async def handler(reader: StreamReader, writer: StreamWriter):
+        """Handle the each of the voters, do a chsh check first and then record the vote."""
         raw = await reader.readline()
         if not raw: return
         parts = raw.decode().strip().split("|")
         voter_id = parts[1] if len(parts) > 1 else parts[0]
 
         async with qram.hw_lock:
+            # CHSH check
             print(f"Tallyman: [{voter_id}] checking Bell pair fidelity...", flush=True)
             passed_chsh = await verify_chsh_channel(qram, voter_id, reader, writer)
 
@@ -103,10 +99,13 @@ def make_voter_handler(qram: QuantumRAM):
                 print(f"Tallyman: [{voter_id}] REJECTED. Entanglement degraded!", flush=True)
                 writer.close()
                 return
+            
+            # Go to the vote phase
 
             writer.write(b"VOTE_PHASE\n")
             await writer.drain()
 
+            # create ballot epr pair
             q_ballot = qram.epr_sockets[voter_id].create_keep()[0]
             qram.stored_ballots[voter_id] = q_ballot
             qram.conn.flush()
