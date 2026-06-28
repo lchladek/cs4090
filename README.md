@@ -1,12 +1,20 @@
-# Quantum Voting
+# Quantum Voting (OkaPro)
 
-[NTT conjugate-coding voting scheme](https://ntt-review.jp/archive/ntttechnical.php?contents=ntr200801sp3.html) (Okamoto, Suzuki, Tokunaga, 2008).
+The OkaPro protocol uses the [NTT conjugate-coding voting scheme](https://ntt-review.jp/archive/ntttechnical.php?contents=ntr200801sp3.html) (Okamoto, Suzuki, Tokunaga, 2008).
 
-## Setup
+## Protocol
 
-```bash
-pip install -r requirements.txt
-```
+For a description of how the OkaPro protocol works, see PROTOCOL.md.
+
+## Files
+
+`administrator.py`: The Administrator server that issues ballots.
+`client_backend.py`: The client (voter) interface that talks to the Administrator and Counter.
+`client.py`: The GUI server and entry point to the client (voter).
+`counter.py`: The Counter server that validates and counts votes.
+`election.py`: A file that stores the main config parameters for all three parties.
+`protocol_io.py`: Classical protocol helpers.
+`quantum.py`: Quantum protocol helpers.
 
 ## Configuration
 
@@ -19,6 +27,10 @@ pip install -r requirements.txt
 Raise `max_qubits` in `simulaqron_settings.json` if `MAX_CONNECTION_QUBITS` exceeds it.
 
 ## Run
+
+```bash
+pip install -r requirements.txt
+```
 
 ```bash
 simulaqron stop

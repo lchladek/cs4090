@@ -1,3 +1,7 @@
+# The Counter is the node that receives ballots from all voters.
+# After the voters are received, the Administrator sends the secret measurement basis.
+# The resulting measurements are validated and counted as votes.
+
 import asyncio
 import sys
 import threading
@@ -48,6 +52,7 @@ _awaiting_final: dict[str, StreamWriter] = {}
 _final_event: asyncio.Event | None = None
 
 
+# Establishes or loads the NetQASM connection
 def _ensure_counter_connection() -> tuple[NetQASMConnection, dict[str, EPRSocket]]:
     global _counter_conn, _counter_epr
     if _counter_conn is None:
@@ -90,6 +95,7 @@ def _party_result(payload: dict, party: str) -> dict:
     }
 
 
+# The main event loop for the counter
 async def run_counter(reader: StreamReader, writer: StreamWriter) -> None:
     print("Counter: voter connected.", flush=True)
     state = WAIT_HELLO
@@ -145,6 +151,7 @@ async def handle_hello(writer: StreamWriter) -> str:
     return WAIT_SUBMIT
 
 
+# Saves a voter's ballot to quantum memory. It is not measured immediately.
 async def receive_submitted_ballot(
     reader: StreamReader, party: str, loop: asyncio.AbstractEventLoop
 ) -> list:
@@ -165,6 +172,7 @@ async def receive_submitted_ballot(
     return ballot_qubits_list
 
 
+# Responds to the client with a status message.
 async def handle_buffered_ballot(
     writer: StreamWriter,
     party: str,
@@ -259,6 +267,8 @@ def _fetch_basis_blocking(ballots_received: int) -> list[int]:
     return basis
 
 
+# Get the secret basis from the Administrator. Measure all received ballots
+# and if they are fully valid, adds them to the vote tally.
 async def count_pending() -> tuple[str | None, dict[str, int], dict[str, dict]]:
     global _secret_basis, _pending, _counts, _counter_conn, _counter_epr
 

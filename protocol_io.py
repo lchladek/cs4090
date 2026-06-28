@@ -1,3 +1,5 @@
+# Some common functions for classical communication and logging
+
 import asyncio
 import json
 from asyncio import StreamReader, StreamWriter

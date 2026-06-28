@@ -1,3 +1,6 @@
+# This file handles the Flask GUI for the client (voter).  
+# The quantum protocol for the voter is in client_backend.py.any
+
 import argparse
 import json
 import logging
@@ -24,14 +27,15 @@ from client_backend import (
     vote_to_bits,
 )
 
-PARTIES = ["Voter1", "Voter2", "Voter3"]
+# Party string that the user can choose from in the GUI
+from election import PARTIES
 
 app = Flask(__name__)
 app.secret_key = "dev"
 _states: dict[str, dict] = {}
 _lock = threading.Lock()
 
-
+# Translate states to a more descriptive string
 def _connection_line(state: str) -> str:
     if state == WAIT_CANDIDATES:
         admin, counter = "connecting", "idle"
@@ -54,6 +58,7 @@ def _connection_line(state: str) -> str:
     return f"Administrator: {admin} | Counter: {counter}"
 
 
+# Initial setup
 def _new_ctx() -> dict:
     return {
         "party": PARTIES[0],
@@ -76,6 +81,7 @@ def _get_ctx() -> dict:
         return _states[sid]
 
 
+# Update status line based on state
 def _set_state(ctx: dict, state: str) -> None:
     ctx["state"] = state
     ctx["connection"] = _connection_line(state)
@@ -164,6 +170,7 @@ def status():
     return jsonify(_snapshot(_get_ctx()))
 
 
+# Start the protocol by receiving the ballot from the Administrator
 @app.route("/connect", methods=["POST"])
 def connect():
     ctx = _get_ctx()
@@ -194,6 +201,7 @@ def connect():
     return jsonify(_snapshot(ctx))
 
 
+# Start the voting procedure (submitting the ballot to the Counter)
 @app.route("/vote", methods=["POST"])
 def vote():
     ctx = _get_ctx()

@@ -1,3 +1,6 @@
+# This file handles the SimulaQron quantum part of the protocol for the client (voter).
+# It is called from client.py, which handles the GUI.
+
 import json
 import threading
 from asyncio import StreamReader, StreamWriter
@@ -49,6 +52,11 @@ def _release_ballot(party: str) -> None:
         session[0].close()
 
 
+# This function performs the initial request to the Administrator,
+# retrieving the candidate list and the ballot.
+# In a real-world setup, this is where the 'trust' step would take place,
+# with the admin only issuing ballots to voters that have authenticated
+# by classical, physical, or other means.
 async def run_admin_session(
     party: str,
     reader: StreamReader,
@@ -109,6 +117,7 @@ async def run_admin_session(
     return candidates
 
 
+# Encodes the vote_bits in the ballot and sends the ballot to the Counter.
 async def run_voter(
     party: str,
     vote_bits: str,

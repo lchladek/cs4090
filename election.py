@@ -1,4 +1,6 @@
-# PIECE_BITS (n), VOTE_BITS (m). See README.md.
+# PIECE_BITS (n), VOTE_BITS (m).
+# These adjust the size of the ballot and the security of the protocol. 
+# See README.md.
 
 PIECE_BITS = 3
 VOTE_BITS = 3

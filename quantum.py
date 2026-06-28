@@ -1,3 +1,5 @@
+# Helper functions for managing the quantum part of the NTT protocol.
+
 import random
 from functools import reduce
 from operator import xor
@@ -131,23 +133,6 @@ def decode_piece(measurements: list[int]) -> tuple[int | None, int]:
         return None, 0
     return bit, 1
 
-
-def decode_ballot(measurements: list[int]) -> tuple[str | None, bool]:
-    if len(measurements) != BALLOT_QUBITS:
-        return None, False
-
-    vote_bits: list[str] = []
-    width = PIECE_QUBIT_COUNT
-    for piece_index in range(VOTE_BITS):
-        start = piece_index * width
-        piece_meas = measurements[start : start + width]
-        bit, valid = decode_piece(piece_meas)
-        if not valid or bit is None:
-            return None, False
-        vote_bits.append(str(bit))
-
-    vote = "".join(vote_bits)
-    return vote, vote in VALID_VOTES
 
 
 def decode_ballot_logged(party: str, measurements: list[int]) -> tuple[str | None, bool]:

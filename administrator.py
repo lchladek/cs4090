@@ -1,3 +1,7 @@
+# The Administrator picks a secret basis and issues ballots to the Voters
+# The security of the protocol is that nobody that the Administrator didn't entrust with a ballot can vote.
+# In a real deployment this would be authenticated (see my comment in client_backend.py)
+
 import asyncio
 import random
 import sys
@@ -30,6 +34,7 @@ _ballots_issued: set[str] = set()
 _ballot_lock = threading.Lock()
 
 
+# The main event loop for the Administrator, which waits to send ballots to voters.
 async def run_administrator(reader: StreamReader, writer: StreamWriter) -> None:
     state = WAIT_MSG
     party = ""
